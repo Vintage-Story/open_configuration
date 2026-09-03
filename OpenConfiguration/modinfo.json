@@ -1,0 +1,14 @@
+{
+    "$schema": "https://moddbcdn.vintagestory.at/schema/modinfo.latest.json",
+    "type": "Code",
+    "modid": "openconfiguration",
+    "name": "OpenConfiguration",
+    "authors": [
+        "BoboDev"
+    ],
+    "description": "Shared API for loading/saving mod configuration files (JSON) and logging, used as a dependency by other mods.",
+    "version": "1.0.0",
+    "dependencies": {
+        "game": "1.21.0"
+    }
+}
