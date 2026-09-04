@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Vintagestory.API.Client;
@@ -74,7 +77,7 @@ public static class ConfigManager
 
         if (!File.Exists(configPath))
         {
-            logger.Log($"Configuration '{configName}' not found, creating {configPath} with default values");
+            logger.LogWarn($"Configuration '{configName}' not found, creating {configPath} with default values");
             T defaultConfig = BuildDefault();
             WriteDefault(defaultConfig);
             return defaultConfig;
@@ -185,6 +188,81 @@ public static class ConfigManager
     /// </remarks>
     /// <param name="key">Arbitrary identifier for this config, matching the key used on the server.</param>
     public static void RegisterSync(ICoreClientAPI api, string key, Action<string> apply) => ConfigSync.RegisterClientHandler(key, apply);
+
+    /// <summary>
+    /// Registers <paramref name="type"/>'s static primitive/string/<c>Dictionary&lt;string, double&gt;</c>
+    /// fields to be pushed to every client as they join, serialized as a single JSON object keyed by field
+    /// name. Pair with <see cref="RegisterStaticFieldSync(ICoreClientAPI, string, Type, Action?, ModLogger?)"/>
+    /// using the same key.
+    /// </summary>
+    /// <remarks>
+    /// For mods whose configuration is flattened into loose static fields on a single class rather than kept
+    /// as <see cref="Load{T}"/> model instances. Mods that keep their config as typed instances should prefer
+    /// <see cref="LoadSynced{T}(ICoreServerAPI, string, string, ModLogger?, string?)"/> instead.
+    /// </remarks>
+    /// <param name="key">Arbitrary identifier for this config, unique across every mod (e.g. "&lt;modid&gt;:&lt;name&gt;").</param>
+    /// <param name="type">Class whose static fields are serialized. Only public/non-public static primitive, string, or Dictionary&lt;string, double&gt; fields are included.</param>
+    public static void RegisterStaticFieldSync(ICoreServerAPI api, string key, Type type) =>
+        RegisterSync(api, key, () => JsonConvert.SerializeObject(
+            GetSyncableStaticFields(type).ToDictionary(f => f.Name, f => f.GetValue(null))
+        ));
+
+    /// <summary>
+    /// Client-side counterpart of <see cref="RegisterStaticFieldSync(ICoreServerAPI, string, Type)"/>. Applies
+    /// the server's JSON onto <paramref name="type"/>'s matching static fields in place.
+    /// </summary>
+    /// <param name="key">Arbitrary identifier for this config, matching the key used on the server.</param>
+    /// <param name="type">Class whose static fields are updated. Must match the type registered on the server.</param>
+    /// <param name="onSynced">Optional callback invoked once the fields have been updated.</param>
+    public static void RegisterStaticFieldSync(ICoreClientAPI api, string key, Type type, Action? onSynced = null, ModLogger? logger = null)
+    {
+        logger ??= ModLogger.None;
+        RegisterSync(api, key, json =>
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                logger.LogWarn($"Static field sync '{key}': received empty json");
+                return;
+            }
+
+            Dictionary<string, JToken>? data;
+            try
+            {
+                data = JsonConvert.DeserializeObject<Dictionary<string, JToken>>(json);
+            }
+            catch (JsonException ex)
+            {
+                logger.LogError($"Static field sync '{key}': cannot deserialize json ({ex.Message})");
+                return;
+            }
+
+            if (data == null)
+            {
+                logger.LogError($"Static field sync '{key}': cannot deserialize json");
+                return;
+            }
+
+            foreach (FieldInfo field in GetSyncableStaticFields(type))
+            {
+                if (!data.TryGetValue(field.Name, out JToken? token)) continue;
+
+                try
+                {
+                    field.SetValue(null, token.ToObject(field.FieldType));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError($"Static field sync '{key}': failed to convert '{field.Name}' ({ex.Message})");
+                }
+            }
+
+            onSynced?.Invoke();
+        });
+    }
+
+    private static IEnumerable<FieldInfo> GetSyncableStaticFields(Type type) =>
+        type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(f => f.FieldType.IsPrimitive || f.FieldType == typeof(string) || f.FieldType == typeof(Dictionary<string, double>));
 
     /// <summary>
     /// Server-side counterpart of <see cref="LoadSynced{T}(ICoreClientAPI, string, string, Action{T}?, ModLogger?)"/>.
