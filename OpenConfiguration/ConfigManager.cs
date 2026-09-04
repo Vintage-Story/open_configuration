@@ -2,7 +2,9 @@ using System;
 using System.IO;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Server;
 
 namespace OpenConfiguration;
 
@@ -104,6 +106,16 @@ public static class ConfigManager
         }
 
         T result = new();
+        Populate(fileObject.ToString(), result, configName, logger);
+
+        BackfillMissingKeys(fileObject, result, configPath, configName, logger);
+
+        return result;
+    }
+
+    /// <summary>Merges <paramref name="json"/> onto <paramref name="target"/> in place, keeping any field the JSON doesn't cover at its current value.</summary>
+    private static void Populate<T>(string json, T target, string configName, ModLogger logger) where T : notnull
+    {
         JsonSerializerSettings populateSettings = new()
         {
             // Without this, lists/dictionaries already holding default values get the loaded items
@@ -115,11 +127,7 @@ public static class ConfigManager
                 args.ErrorContext.Handled = true;
             }
         };
-        JsonConvert.PopulateObject(fileObject.ToString(), result, populateSettings);
-
-        BackfillMissingKeys(fileObject, result, configPath, configName, logger);
-
-        return result;
+        JsonConvert.PopulateObject(json, target, populateSettings);
     }
 
     /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
@@ -152,6 +160,97 @@ public static class ConfigManager
     /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
     public static void SaveModConfig<T>(ICoreAPI api, string modFolderName, string configName, T config, ModLogger? logger = null)
         => Save(api, $"ModConfig/{modFolderName}/config", configName, config, logger);
+
+    /// <summary>
+    /// Registers <paramref name="serialize"/> to run whenever a player finishes joining, pushing its result to
+    /// that player over the shared OpenConfiguration network channel under <paramref name="key"/>. Pair with a
+    /// client-side <see cref="RegisterSync(ICoreClientAPI, string, Action{string})"/> using the same key.
+    /// </summary>
+    /// <remarks>
+    /// Low-level building block for mods whose configuration isn't (yet) a plain <see cref="Load{T}"/> model —
+    /// e.g. one assembled by hand from several sources. Mods using <see cref="Load{T}"/> should prefer
+    /// <see cref="LoadSynced{T}(ICoreServerAPI, string, string, ModLogger?, string?)"/> instead.
+    /// </remarks>
+    /// <param name="key">Arbitrary identifier for this config, unique across every mod (e.g. "&lt;modid&gt;:&lt;name&gt;").</param>
+    public static void RegisterSync(ICoreServerAPI api, string key, Func<string> serialize) => ConfigSync.RegisterServerProvider(key, serialize);
+
+    /// <summary>
+    /// Registers <paramref name="apply"/> to run whenever a packet for <paramref name="key"/> arrives from the
+    /// server over the shared OpenConfiguration network channel. Pair with a server-side
+    /// <see cref="RegisterSync(ICoreServerAPI, string, Func{string})"/> using the same key.
+    /// </summary>
+    /// <remarks>
+    /// Low-level building block for mods whose configuration isn't (yet) a plain <see cref="Load{T}"/> model.
+    /// Mods using <see cref="Load{T}"/> should prefer <see cref="LoadSynced{T}(ICoreClientAPI, string, string, Action{T}?, ModLogger?)"/> instead.
+    /// </remarks>
+    /// <param name="key">Arbitrary identifier for this config, matching the key used on the server.</param>
+    public static void RegisterSync(ICoreClientAPI api, string key, Action<string> apply) => ConfigSync.RegisterClientHandler(key, apply);
+
+    /// <summary>
+    /// Server-side counterpart of <see cref="LoadSynced{T}(ICoreClientAPI, string, string, Action{T}?, ModLogger?)"/>.
+    /// Loads the config exactly like <see cref="Load{T}"/>, then registers it to be pushed to every client as
+    /// they join, so client code can rely on the server's values instead of its own local file.
+    /// </summary>
+    public static T LoadSynced<T>(
+        ICoreServerAPI api,
+        string relativeDirectory,
+        string configName,
+        ModLogger? logger = null,
+        string? defaultAsset = null
+    ) where T : class, new()
+    {
+        T config = Load<T>(api, relativeDirectory, configName, logger, defaultAsset);
+        RegisterSync(api, SyncKey(relativeDirectory, configName), () => JsonConvert.SerializeObject(config));
+        return config;
+    }
+
+    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
+    public static T LoadSyncedModConfig<T>(
+        ICoreServerAPI api,
+        string modFolderName,
+        string configName,
+        ModLogger? logger = null,
+        string? defaultAsset = null
+    ) where T : class, new()
+        => LoadSynced<T>(api, $"ModConfig/{modFolderName}/config", configName, logger, defaultAsset);
+
+    /// <summary>
+    /// Client-side counterpart of <see cref="LoadSynced{T}(ICoreServerAPI, string, string, ModLogger?, string?)"/>.
+    /// Returns a <typeparamref name="T"/> instance seeded with its type defaults; the same instance is then
+    /// updated in place (fields already covered by the server's config get overwritten) once the server's
+    /// value arrives, right after this client finishes joining. Nothing is read from the local disk, since the
+    /// server's file is authoritative.
+    /// </summary>
+    /// <param name="onSynced">Optional callback invoked, with the same instance, right after it is updated.</param>
+    public static T LoadSynced<T>(
+        ICoreClientAPI api,
+        string relativeDirectory,
+        string configName,
+        Action<T>? onSynced = null,
+        ModLogger? logger = null
+    ) where T : class, new()
+    {
+        logger ??= ModLogger.None;
+        T config = new();
+        RegisterSync(api, SyncKey(relativeDirectory, configName), json =>
+        {
+            Populate(json, config, configName, logger);
+            onSynced?.Invoke(config);
+        });
+        return config;
+    }
+
+    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
+    public static T LoadSyncedModConfig<T>(
+        ICoreClientAPI api,
+        string modFolderName,
+        string configName,
+        Action<T>? onSynced = null,
+        ModLogger? logger = null
+    ) where T : class, new()
+        => LoadSynced<T>(api, $"ModConfig/{modFolderName}/config", configName, onSynced, logger);
+
+    private static string SyncKey(string relativeDirectory, string configName) => $"{relativeDirectory}/{configName}";
 
     private static void BackfillMissingKeys<T>(JObject fileObject, T defaults, string configPath, string configName, ModLogger logger) where T : notnull
     {

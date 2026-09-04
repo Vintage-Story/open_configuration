@@ -21,6 +21,13 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <Reference Include="Protobuf">
+      <HintPath>$(VINTAGE_STORY)/Lib/protobuf-net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
 <ItemGroup>
   <Content Include="modinfo.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
