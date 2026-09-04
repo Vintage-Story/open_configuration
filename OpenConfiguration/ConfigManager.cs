@@ -55,7 +55,13 @@ public static class ConfigManager
         {
             if (defaultAsset != null)
             {
-                T? fromAsset = api.Assets.Get(new AssetLocation(defaultAsset))?.ToObject<T>();
+                // ObjectCreationHandling.Replace is required here: without it, Newtonsoft reuses the
+                // list/dictionary instances already set by T's field initializers and appends the asset's
+                // items onto them instead of replacing them, silently duplicating every default collection.
+                T? fromAsset = api.Assets.Get(new AssetLocation(defaultAsset))?.ToObject<T>(new JsonSerializerSettings
+                {
+                    ObjectCreationHandling = ObjectCreationHandling.Replace
+                });
                 if (fromAsset != null) return fromAsset;
                 logger.LogError($"Cannot load default asset '{defaultAsset}', falling back to type defaults");
             }
@@ -133,7 +139,7 @@ public static class ConfigManager
         JsonConvert.PopulateObject(json, target, populateSettings);
     }
 
-    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
+    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/&lt;configName&gt;.json" layout.</summary>
     public static T LoadModConfig<T>(
         ICoreAPI api,
         string modFolderName,
@@ -141,7 +147,7 @@ public static class ConfigManager
         ModLogger? logger = null,
         string? defaultAsset = null
     ) where T : class, new()
-        => Load<T>(api, $"ModConfig/{modFolderName}/config", configName, logger, defaultAsset);
+        => Load<T>(api, $"ModConfig/{modFolderName}", configName, logger, defaultAsset);
 
     /// <summary>Serializes <paramref name="config"/> to &lt;api.DataBasePath&gt;/&lt;relativeDirectory&gt;/&lt;configName&gt;.json.</summary>
     public static void Save<T>(ICoreAPI api, string relativeDirectory, string configName, T config, ModLogger? logger = null)
@@ -160,9 +166,9 @@ public static class ConfigManager
         }
     }
 
-    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
+    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/&lt;configName&gt;.json" layout.</summary>
     public static void SaveModConfig<T>(ICoreAPI api, string modFolderName, string configName, T config, ModLogger? logger = null)
-        => Save(api, $"ModConfig/{modFolderName}/config", configName, config, logger);
+        => Save(api, $"ModConfig/{modFolderName}", configName, config, logger);
 
     /// <summary>
     /// Registers <paramref name="serialize"/> to run whenever a player finishes joining, pushing its result to
@@ -282,7 +288,7 @@ public static class ConfigManager
         return config;
     }
 
-    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
+    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/&lt;configName&gt;.json" layout.</summary>
     public static T LoadSyncedModConfig<T>(
         ICoreServerAPI api,
         string modFolderName,
@@ -290,7 +296,7 @@ public static class ConfigManager
         ModLogger? logger = null,
         string? defaultAsset = null
     ) where T : class, new()
-        => LoadSynced<T>(api, $"ModConfig/{modFolderName}/config", configName, logger, defaultAsset);
+        => LoadSynced<T>(api, $"ModConfig/{modFolderName}", configName, logger, defaultAsset);
 
     /// <summary>
     /// Client-side counterpart of <see cref="LoadSynced{T}(ICoreServerAPI, string, string, ModLogger?, string?)"/>.
@@ -318,7 +324,7 @@ public static class ConfigManager
         return config;
     }
 
-    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/config/&lt;configName&gt;.json" layout.</summary>
+    /// <summary>Convenience overload for the common "ModConfig/&lt;modFolderName&gt;/&lt;configName&gt;.json" layout.</summary>
     public static T LoadSyncedModConfig<T>(
         ICoreClientAPI api,
         string modFolderName,
@@ -326,7 +332,7 @@ public static class ConfigManager
         Action<T>? onSynced = null,
         ModLogger? logger = null
     ) where T : class, new()
-        => LoadSynced<T>(api, $"ModConfig/{modFolderName}/config", configName, onSynced, logger);
+        => LoadSynced<T>(api, $"ModConfig/{modFolderName}", configName, onSynced, logger);
 
     private static string SyncKey(string relativeDirectory, string configName) => $"{relativeDirectory}/{configName}";
 
