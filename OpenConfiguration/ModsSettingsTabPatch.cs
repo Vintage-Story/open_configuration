@@ -81,7 +81,7 @@ internal static class ModsSettingsTabPatch
 
     private record ModEntry(string Folder, ConfigSource Source);
 
-    private record FileEntry(string Name, ConfigSource Source);
+    private record FileEntry(string Name, ConfigSource Source, bool IsFolder = false);
 
     private record FieldRow(string Key, JToken OriginalValue, bool IsReadOnly);
 
@@ -136,7 +136,7 @@ internal static class ModsSettingsTabPatch
                 };
                 composer = composer.AddButton(
                     label,
-                    () => { OnModFolderSelected(instance, captured, capi); return true; },
+                    () => { OnFolderContentsShown(instance, captured, "", capi); return true; },
                     ElementBounds.Fixed(0.0, y, 280.0, 30.0)
                 );
                 y += 40.0;
@@ -149,65 +149,128 @@ internal static class ModsSettingsTabPatch
         handler.LoadComposer(composer);
     }
 
-    private static void OnModFolderSelected(GuiCompositeSettings instance, ModEntry entry, ICoreClientAPI capi)
+    // subpath is the relative path within the mod folder ("" = root, "levelstats" = subfolder).
+    // FileEntry.Name for files is the full relative key ("levelstats/axe"); for folders it is the subpath ("levelstats").
+    private static void OnFolderContentsShown(GuiCompositeSettings instance, ModEntry mod, string subpath, ICoreClientAPI capi, int scrollTop = 0)
     {
         Traverse traverse = Traverse.Create(instance);
         IGameSettingsHandler handler = traverse.Field("handler").GetValue<IGameSettingsHandler>();
 
         Dictionary<string, string>? serverMod = null;
-        if (entry.Source is ConfigSource.Server or ConfigSource.Both)
-            ModConfigEditorSync.ServerIndex?.Mods.TryGetValue(entry.Folder, out serverMod);
+        if (mod.Source is ConfigSource.Server or ConfigSource.Both)
+            ModConfigEditorSync.ServerIndex?.Mods.TryGetValue(mod.Folder, out serverMod);
         HashSet<string> serverFiles = serverMod?.Keys.ToHashSet() ?? [];
 
         Dictionary<string, string>? clientMod = null;
-        if (entry.Source is ConfigSource.Client or ConfigSource.Both)
-            ModConfigEditorSync.BuildClientIndex(capi).Mods.TryGetValue(entry.Folder, out clientMod);
+        if (mod.Source is ConfigSource.Client or ConfigSource.Both)
+            ModConfigEditorSync.BuildClientIndex(capi).Mods.TryGetValue(mod.Folder, out clientMod);
         HashSet<string> clientFiles = clientMod?.Keys.ToHashSet() ?? [];
 
-        List<FileEntry> files = serverFiles.Union(clientFiles)
-            .OrderBy(name => name)
-            .Select(name =>
+        string prefix = subpath.Length > 0 ? subpath + "/" : "";
+        HashSet<string> seenDirs = [];
+        List<FileEntry> entries = [];
+
+        foreach (string key in serverFiles.Union(clientFiles).OrderBy(k => k))
+        {
+            if (!key.StartsWith(prefix)) continue;
+            string relative = key[prefix.Length..];
+            int slash = relative.IndexOf('/');
+            if (slash < 0)
             {
-                bool inServer = serverFiles.Contains(name);
-                bool inClient = clientFiles.Contains(name);
-                ConfigSource source = (inServer && inClient) ? ConfigSource.Both
-                    : inServer ? ConfigSource.Server
-                    : ConfigSource.Client;
-                return new FileEntry(name, source);
-            })
-            .ToList();
+                bool inServer = serverFiles.Contains(key);
+                bool inClient = clientFiles.Contains(key);
+                ConfigSource src = (inServer && inClient) ? ConfigSource.Both
+                    : inServer ? ConfigSource.Server : ConfigSource.Client;
+                entries.Add(new FileEntry(key, src));
+            }
+            else
+            {
+                string dirKey = prefix + relative[..slash];
+                if (!seenDirs.Add(dirKey)) continue;
+                string dirPrefix = dirKey + "/";
+                bool inServer = serverFiles.Any(k => k.StartsWith(dirPrefix));
+                bool inClient = clientFiles.Any(k => k.StartsWith(dirPrefix));
+                ConfigSource src = (inServer && inClient) ? ConfigSource.Both
+                    : inServer ? ConfigSource.Server : ConfigSource.Client;
+                entries.Add(new FileEntry(dirKey, src, IsFolder: true));
+            }
+        }
 
         GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
 
-        composer = composer
-            .AddButton("Back", () => { OnModsTabToggled(instance, true); return true; },
-                ElementBounds.Fixed(0.0, 90.0, 70.0, 25.0))
-            .AddStaticText(entry.Folder, CairoFont.WhiteSmallishText(),
-                ElementBounds.Fixed(80.0, 90.0, 310.0, 30.0));
+        string headerText = subpath.Length > 0
+            ? mod.Folder + " / " + subpath.Replace("/", " / ")
+            : mod.Folder;
+        string parentPath = subpath.Contains('/') ? subpath[..subpath.LastIndexOf('/')] : "";
 
-        if (files.Count == 0)
+        composer = composer
+            .AddButton("Back",
+                () => {
+                    if (subpath.Length == 0) OnModsTabToggled(instance, true);
+                    else OnFolderContentsShown(instance, mod, parentPath, capi);
+                    return true;
+                },
+                ElementBounds.Fixed(0, 90, 70, 25))
+            .AddStaticText(headerText, CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(80, 93, 310, 25));
+
+        const int visibleItems = 7;
+        const double itemStep = 40;
+
+        scrollTop = Math.Clamp(scrollTop, 0, Math.Max(0, entries.Count - visibleItems));
+        int endIdx = Math.Min(scrollTop + visibleItems, entries.Count);
+
+        if (entries.Count == 0)
         {
             composer = composer.AddStaticText("No configuration files found.", CairoFont.WhiteDetailText(),
-                ElementBounds.Fixed(0.0, 130.0, 400.0, 30.0));
+                ElementBounds.Fixed(0, 130, 400, 30));
         }
         else
         {
-            double y = 130.0;
-            foreach (FileEntry file in files)
+            double y = 130;
+            for (int i = scrollTop; i < endIdx; i++)
             {
-                FileEntry captured = file;
-                string label = file.Source switch
+                FileEntry entry = entries[i];
+                FileEntry captured = entry;
+                string displayName = entry.Name[prefix.Length..];
+                if (entry.IsFolder) displayName += "/";
+                string label = entry.Source switch
                 {
-                    ConfigSource.Server => $"{file.Name} [Server]",
-                    ConfigSource.Client => $"{file.Name} [Client]",
-                    _ => file.Name
+                    ConfigSource.Server => $"{displayName} [Server]",
+                    ConfigSource.Client => $"{displayName} [Client]",
+                    _ => displayName
                 };
                 composer = composer.AddButton(
                     label,
-                    () => { OnFileSelected(instance, entry, captured, capi); return true; },
-                    ElementBounds.Fixed(0.0, y, 280.0, 30.0)
-                );
-                y += 40.0;
+                    () => {
+                        if (captured.IsFolder) OnFolderContentsShown(instance, mod, captured.Name, capi);
+                        else OnFileSelected(instance, mod, captured, subpath, capi);
+                        return true;
+                    },
+                    ElementBounds.Fixed(0, y, 300, 30));
+                y += itemStep;
+            }
+
+            bool hasPrev = scrollTop > 0;
+            bool hasNext = endIdx < entries.Count;
+            if (hasPrev || hasNext)
+            {
+                double navY = 130 + visibleItems * itemStep + 5;
+                int capturedScrollTop = scrollTop;
+
+                if (hasPrev)
+                    composer = composer.AddButton("Prev",
+                        () => { OnFolderContentsShown(instance, mod, subpath, capi, capturedScrollTop - visibleItems); return true; },
+                        ElementBounds.Fixed(0, navY, 70, 25));
+
+                string pageInfo = $"{scrollTop + 1}-{endIdx} / {entries.Count}";
+                composer = composer.AddStaticText(pageInfo, CairoFont.WhiteDetailText(),
+                    ElementBounds.Fixed(80, navY + 3, 190, 22));
+
+                if (hasNext)
+                    composer = composer.AddButton("Next",
+                        () => { OnFolderContentsShown(instance, mod, subpath, capi, capturedScrollTop + visibleItems); return true; },
+                        ElementBounds.Fixed(290, navY, 70, 25));
             }
         }
 
@@ -216,7 +279,7 @@ internal static class ModsSettingsTabPatch
         handler.LoadComposer(composer);
     }
 
-    private static void OnFileSelected(GuiCompositeSettings instance, ModEntry mod, FileEntry file, ICoreClientAPI capi)
+    private static void OnFileSelected(GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, ICoreClientAPI capi)
     {
         JObject? jObj = null;
         try { jObj = JObject.Parse(GetFileContent(mod, file, capi)); } catch { }
@@ -224,7 +287,7 @@ internal static class ModsSettingsTabPatch
         List<FieldRow> fields = jObj != null ? BuildFields(jObj) : [];
         Dictionary<string, JToken> values = fields.ToDictionary(f => f.Key, f => f.OriginalValue.DeepClone());
 
-        ShowEditor(instance, mod, file, capi, jObj, fields, values);
+        ShowEditor(instance, mod, file, subpath, capi, jObj, fields, values);
     }
 
     private static List<FieldRow> BuildFields(JObject obj) =>
@@ -239,7 +302,7 @@ internal static class ModsSettingsTabPatch
             .ToList();
 
     private static void ShowEditor(
-        GuiCompositeSettings instance, ModEntry mod, FileEntry file, ICoreClientAPI capi,
+        GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, ICoreClientAPI capi,
         JObject? original, List<FieldRow> fields, Dictionary<string, JToken> values,
         int scrollTop = 0)
     {
@@ -248,7 +311,7 @@ internal static class ModsSettingsTabPatch
 
         const double rowH = 30.0, rowGap = 6.0, rowStep = rowH + rowGap;
         const double startY = 125.0;
-        const double labelW = 200.0, inputX = 210.0, inputW = 160.0;
+        const double labelW = 200.0, inputX = 210.0, inputW = 130.0, removeX = 345.0, removeW = 22.0;
         const int visibleRows = 8;
 
         // Virtual scrolling: only add elements for the visible window of rows.
@@ -259,10 +322,13 @@ internal static class ModsSettingsTabPatch
 
         GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
 
+        string editorHeader = subpath.Length > 0
+            ? $"{mod.Folder} / {subpath} / {file.Name[(subpath.Length + 1)..]}"
+            : $"{mod.Folder} / {file.Name}";
         composer = composer
-            .AddButton("Back", () => { OnModFolderSelected(instance, mod, capi); return true; },
+            .AddButton("Back", () => { OnFolderContentsShown(instance, mod, subpath, capi); return true; },
                 ElementBounds.Fixed(0, 90, 70, 25))
-            .AddStaticText($"{mod.Folder} / {file.Name}", CairoFont.WhiteDetailText(),
+            .AddStaticText(editorHeader, CairoFont.WhiteDetailText(),
                 ElementBounds.Fixed(80, 93, 320, 25));
 
         for (int i = scrollTop; i < endRow; i++)
@@ -303,6 +369,16 @@ internal static class ModsSettingsTabPatch
                     text => values[capturedKey] = new JValue(text),
                     CairoFont.WhiteDetailText(), fieldKey);
             }
+
+            composer = composer.AddButton("X",
+                () => {
+                    fields.RemoveAll(f => f.Key == capturedKey);
+                    values.Remove(capturedKey);
+                    int newScroll = Math.Clamp(scrollTop, 0, Math.Max(0, fields.Count - visibleRows));
+                    ShowEditor(instance, mod, file, subpath, capi, original, fields, values, newScroll);
+                    return true;
+                },
+                ElementBounds.Fixed(removeX, rowY, removeW, rowH));
         }
 
         bool hasPrev = scrollTop > 0;
@@ -319,7 +395,7 @@ internal static class ModsSettingsTabPatch
             if (hasPrev)
             {
                 composer = composer.AddButton("Prev",
-                    () => { ShowEditor(instance, mod, file, capi, original, fields, values, capturedScrollTop - visibleRows); return true; },
+                    () => { ShowEditor(instance, mod, file, subpath, capi, original, fields, values, capturedScrollTop - visibleRows); return true; },
                     ElementBounds.Fixed(0, navY, 70, 25));
             }
 
@@ -330,7 +406,7 @@ internal static class ModsSettingsTabPatch
             if (hasNext)
             {
                 composer = composer.AddButton("Next",
-                    () => { ShowEditor(instance, mod, file, capi, original, fields, values, capturedScrollTop + visibleRows); return true; },
+                    () => { ShowEditor(instance, mod, file, subpath, capi, original, fields, values, capturedScrollTop + visibleRows); return true; },
                     ElementBounds.Fixed(290, navY, 70, 25));
             }
         }
@@ -341,11 +417,11 @@ internal static class ModsSettingsTabPatch
 
         composer = composer
             .AddButton("Save",
-                () => { SaveFromForm(instance, mod, file, original, fields, values, capi); return true; },
+                () => { SaveFromForm(instance, mod, file, subpath, original, fields, values, capi); return true; },
                 ElementBounds.Fixed(0, btnY, 80, 30))
-            .AddButton("Cancel",
-                () => { OnModFolderSelected(instance, mod, capi); return true; },
-                ElementBounds.Fixed(90, btnY, 90, 30));
+            .AddButton("Add",
+                () => { ShowAddEntryDialog(instance, mod, file, subpath, capi, original, fields, values, scrollTop); return true; },
+                ElementBounds.Fixed(90, btnY, 80, 30));
 
         composer = composer.Compose();
         traverse.Field("composer").SetValue(composer);
@@ -378,18 +454,77 @@ internal static class ModsSettingsTabPatch
         }
     }
 
+    private static void ShowAddEntryDialog(
+        GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, ICoreClientAPI capi,
+        JObject? original, List<FieldRow> fields, Dictionary<string, JToken> values,
+        int returnScrollTop = 0)
+    {
+        Traverse traverse = Traverse.Create(instance);
+        IGameSettingsHandler handler = traverse.Field("handler").GetValue<IGameSettingsHandler>();
+
+        string newKey = "";
+        string newValue = "";
+
+        string editorHeader = subpath.Length > 0
+            ? $"{mod.Folder} / {subpath} / {file.Name[(subpath.Length + 1)..]}"
+            : $"{mod.Folder} / {file.Name}";
+
+        GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
+        composer = composer
+            .AddButton("Back",
+                () => { ShowEditor(instance, mod, file, subpath, capi, original, fields, values, returnScrollTop); return true; },
+                ElementBounds.Fixed(0, 90, 70, 25))
+            .AddStaticText(editorHeader, CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(80, 93, 320, 25))
+            .AddStaticText("Key:", CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(5, 145, 100, 28))
+            .AddTextInput(
+                ElementBounds.Fixed(110, 143, 250, 30),
+                text => newKey = text,
+                CairoFont.WhiteDetailText(), "newEntryKey")
+            .AddStaticText("Value:", CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(5, 190, 100, 28))
+            .AddTextInput(
+                ElementBounds.Fixed(110, 188, 250, 30),
+                text => newValue = text,
+                CairoFont.WhiteDetailText(), "newEntryValue")
+            .AddButton("Add",
+                () => {
+                    string key = newKey.Trim();
+                    if (string.IsNullOrEmpty(key)) return true;
+                    if (!values.ContainsKey(key))
+                    {
+                        JValue jval = new JValue(newValue);
+                        fields.Add(new FieldRow(key, jval, false));
+                        values[key] = jval.DeepClone();
+                    }
+                    ShowEditor(instance, mod, file, subpath, capi, original, fields, values, returnScrollTop);
+                    return true;
+                },
+                ElementBounds.Fixed(0, 235, 80, 30));
+
+        composer = composer.Compose();
+        traverse.Field("composer").SetValue(composer);
+        handler.LoadComposer(composer);
+    }
+
     private static void SaveFromForm(
-        GuiCompositeSettings instance, ModEntry mod, FileEntry file,
+        GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath,
         JObject? original, List<FieldRow> fields, Dictionary<string, JToken> values,
         ICoreClientAPI capi)
     {
         JObject result = (JObject?)original?.DeepClone() ?? new JObject();
+
+        HashSet<string> activeKeys = fields.Select(f => f.Key).ToHashSet();
+        foreach (string key in result.Properties().Select(p => p.Name).ToList())
+            if (!activeKeys.Contains(key)) result.Remove(key);
+
         foreach (FieldRow field in fields)
         {
             if (values.TryGetValue(field.Key, out JToken? raw))
                 result[field.Key] = ConvertValue(raw, field.OriginalValue.Type);
         }
-        SaveContent(instance, mod, file, result.ToString(Formatting.Indented), capi);
+        SaveContent(instance, mod, file, subpath, result.ToString(Formatting.Indented), capi);
     }
 
     private static JToken ConvertValue(JToken raw, JTokenType target)
@@ -419,11 +554,11 @@ internal static class ModsSettingsTabPatch
                 return content;
         }
 
-        string localPath = Path.Combine(capi.DataBasePath, "ModConfig", mod.Folder, $"{file.Name}.json");
+        string localPath = LocalPath(capi.DataBasePath, mod.Folder, file.Name);
         return File.Exists(localPath) ? File.ReadAllText(localPath) : "";
     }
 
-    private static void SaveContent(GuiCompositeSettings instance, ModEntry mod, FileEntry file, string content, ICoreClientAPI capi)
+    private static void SaveContent(GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, string content, ICoreClientAPI capi)
     {
         if (file.Source is ConfigSource.Server or ConfigSource.Both)
         {
@@ -439,7 +574,8 @@ internal static class ModsSettingsTabPatch
         {
             try
             {
-                string localPath = Path.Combine(capi.DataBasePath, "ModConfig", mod.Folder, $"{file.Name}.json");
+                string localPath = LocalPath(capi.DataBasePath, mod.Folder, file.Name);
+                Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
                 File.WriteAllText(localPath, content);
             }
             catch (Exception ex)
@@ -448,6 +584,13 @@ internal static class ModsSettingsTabPatch
             }
         }
 
-        OnModFolderSelected(instance, mod, capi);
+        OnFolderContentsShown(instance, mod, subpath, capi);
+    }
+
+    // Builds an absolute path for a config file whose key may contain "/" for nested paths.
+    private static string LocalPath(string dataBasePath, string modFolder, string fileKey)
+    {
+        string relativePart = fileKey.Replace('/', Path.DirectorySeparatorChar) + ".json";
+        return Path.Combine(dataBasePath, "ModConfig", modFolder, relativePart);
     }
 }

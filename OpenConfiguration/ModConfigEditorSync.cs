@@ -18,7 +18,8 @@ internal static class ModConfigEditorSync
 
     internal static void RegisterServer(ICoreServerAPI api)
     {
-        ConfigSync.RegisterServerProvider(IndexKey, () => BuildServerIndexJson(api));
+        ConfigSync.RegisterServerProvider(IndexKey, () => BuildServerIndexJson(api),
+            player => player.HasPrivilege(Privilege.controlserver));
 
         api.Network.GetChannel(ConfigSync.ChannelId)
             .SetMessageHandler<ModConfigSavePacket>((player, packet) => HandleSave(api, player, packet));
@@ -46,17 +47,21 @@ internal static class ModConfigEditorSync
             return;
         }
 
-        // Reject names that look like path traversal
-        if (string.IsNullOrWhiteSpace(packet.Folder) || string.IsNullOrWhiteSpace(packet.FileName)
+        // Reject names that look like path traversal.
+        // FileName may contain "/" for nested paths (e.g. "levelstats/axe") — validate each component.
+        string[] fileNameParts = packet.FileName.Split('/');
+        if (string.IsNullOrWhiteSpace(packet.Folder)
             || packet.Folder.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-            || packet.FileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            || fileNameParts.Length == 0
+            || fileNameParts.Any(p => string.IsNullOrWhiteSpace(p) || p.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
         {
             api.Logger.Warning("[OpenConfiguration] {0} sent invalid folder/file name", player.PlayerName);
             return;
         }
 
         string modConfigPath = Path.GetFullPath(Path.Combine(api.DataBasePath, "ModConfig"));
-        string targetPath = Path.GetFullPath(Path.Combine(modConfigPath, packet.Folder, $"{packet.FileName}.json"));
+        string relativeFile = string.Join(Path.DirectorySeparatorChar, fileNameParts) + ".json";
+        string targetPath = Path.GetFullPath(Path.Combine(modConfigPath, packet.Folder, relativeFile));
         if (!targetPath.StartsWith(modConfigPath + Path.DirectorySeparatorChar))
         {
             api.Logger.Warning("[OpenConfiguration] {0} attempted path traversal", player.PlayerName);
@@ -94,13 +99,25 @@ internal static class ModConfigEditorSync
         {
             string folderName = new DirectoryInfo(dir).Name;
             Dictionary<string, string> files = new();
-
-            foreach (string file in Directory.GetFiles(dir, "*.json").OrderBy(f => f))
-                files[Path.GetFileNameWithoutExtension(file)] = File.ReadAllText(file);
-
-            index.Mods[folderName] = files;
+            IndexDirectory(dir, dir, files);
+            if (files.Count > 0)
+                index.Mods[folderName] = files;
         }
 
         return index;
+    }
+
+    private static void IndexDirectory(string rootDir, string currentDir, Dictionary<string, string> files)
+    {
+        foreach (string file in Directory.GetFiles(currentDir, "*.json").OrderBy(f => f))
+        {
+            // Key is relative path with forward slashes and no .json extension (e.g. "levelstats/axe")
+            string relative = Path.GetRelativePath(rootDir, file);
+            string key = relative[..^5].Replace(Path.DirectorySeparatorChar, '/');
+            files[key] = File.ReadAllText(file);
+        }
+
+        foreach (string subDir in Directory.GetDirectories(currentDir).OrderBy(d => d))
+            IndexDirectory(rootDir, subDir, files);
     }
 }

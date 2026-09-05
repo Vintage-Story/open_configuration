@@ -16,7 +16,9 @@ internal static class ConfigSync
 {
     internal const string ChannelId = "openconfiguration";
 
-    private static readonly ConcurrentDictionary<string, Func<string>> ServerProviders = new();
+    private record ServerProvider(Func<string> Serialize, Func<IServerPlayer, bool>? CanSend);
+
+    private static readonly ConcurrentDictionary<string, ServerProvider> ServerProviders = new();
     private static readonly ConcurrentDictionary<string, Action<string>> ClientHandlers = new();
 
     internal static void InitServer(ICoreServerAPI api)
@@ -24,9 +26,10 @@ internal static class ConfigSync
         IServerNetworkChannel channel = api.Network.GetChannel(ChannelId);
         api.Event.PlayerNowPlaying += player =>
         {
-            foreach ((string key, Func<string> serialize) in ServerProviders)
+            foreach ((string key, ServerProvider provider) in ServerProviders)
             {
-                channel.SendPacket(new ConfigSyncPacket { Key = key, Json = serialize() }, player);
+                if (provider.CanSend != null && !provider.CanSend(player)) continue;
+                channel.SendPacket(new ConfigSyncPacket { Key = key, Json = provider.Serialize() }, player);
             }
         };
     }
@@ -39,7 +42,8 @@ internal static class ConfigSync
         });
     }
 
-    internal static void RegisterServerProvider(string key, Func<string> serialize) => ServerProviders[key] = serialize;
+    internal static void RegisterServerProvider(string key, Func<string> serialize, Func<IServerPlayer, bool>? canSend = null)
+        => ServerProviders[key] = new ServerProvider(serialize, canSend);
 
     internal static void RegisterClientHandler(string key, Action<string> apply) => ClientHandlers[key] = apply;
 }
