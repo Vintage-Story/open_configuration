@@ -27,11 +27,11 @@ internal static class ModsSettingsTabPatch
     private static bool ShouldShowModsTab(GuiCompositeSettings instance)
     {
         IGameSettingsHandler? handler = Traverse.Create(instance).Field("handler").GetValue<IGameSettingsHandler>();
-        if (handler == null || !handler.IsIngame) return false;
-
-        ICoreClientAPI capi = handler.Api;
-        return capi.IsSinglePlayer || (capi.World.Player?.HasPrivilege(Privilege.controlserver) ?? false);
+        return handler != null && handler.IsIngame;
     }
+
+    private static bool IsAdmin(ICoreClientAPI capi) =>
+        capi.IsSinglePlayer || (capi.World.Player?.HasPrivilege(Privilege.controlserver) ?? false);
 
     [HarmonyPatch("updateButtonBounds")]
     [HarmonyPostfix]
@@ -93,9 +93,12 @@ internal static class ModsSettingsTabPatch
         IGameSettingsHandler handler = traverse.Field("handler").GetValue<IGameSettingsHandler>();
         ICoreClientAPI capi = handler.Api;
 
-        // Server-side mod configs received when the player joined
-        HashSet<string> serverFolders = ModConfigEditorSync.ServerIndex?.Mods.Keys.ToHashSet()
-            ?? [];
+        bool isAdmin = IsAdmin(capi);
+
+        // Server-side mod configs received when the player joined — only visible to admins
+        HashSet<string> serverFolders = isAdmin
+            ? (ModConfigEditorSync.ServerIndex?.Mods.Keys.ToHashSet() ?? [])
+            : [];
 
         // Client-side mod configs (client-only mods)
         ModConfigIndex clientIndex = ModConfigEditorSync.BuildClientIndex(capi);
