@@ -11,14 +11,21 @@ public class OpenConfigurationModSystem : ModSystem
 
     public override void Start(ICoreAPI api)
     {
-        api.Network.RegisterChannel(ConfigSync.ChannelId).RegisterMessageType<ConfigSyncPacket>();
+        api.Network.RegisterChannel(ConfigSync.ChannelId)
+            .RegisterMessageType<ConfigSyncPacket>()
+            .RegisterMessageType<ModConfigSavePacket>();
     }
 
-    public override void StartServerSide(ICoreServerAPI api) => ConfigSync.InitServer(api);
+    public override void StartServerSide(ICoreServerAPI api)
+    {
+        ConfigSync.InitServer(api);
+        ModConfigEditorSync.RegisterServer(api);
+    }
 
     public override void StartClientSide(ICoreClientAPI api)
     {
         ConfigSync.InitClient(api);
+        ModConfigEditorSync.RegisterClient(api);
 
         if (!Harmony.HasAnyPatches(HarmonyId))
         {
