@@ -16,7 +16,7 @@ without repeating the loading boilerplate in every mod.
 
 ## Basic usage
 
-Define a simple class with the fields and their defaults (no `static`, no dictionary):
+Define a simple class with the fields and their defaults:
 
 ```csharp
 public class BaseConfig
