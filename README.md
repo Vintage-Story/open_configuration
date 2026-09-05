@@ -88,12 +88,11 @@ handler for that packet's key and applies its JSON. This is also the mechanism b
 
 ## Hot reload
 
-Configs saved via the in-game editor take effect immediately — no server restart needed.
+Configs saved via the in-game editor take effect immediately no server restart needed.
 
 **`LoadSynced`** gets hot reload automatically. When a player with `controlserver` privilege saves a config
 through the Mods settings tab, the server re-reads the file, updates the in-memory config object in place,
-and re-syncs all currently connected clients. No code changes required in the consuming mod.
-
+and re-syncs all currently connected clients.
 **`LoadModConfig` / `Load`** (non-synced configs) can opt into hot reload with `WatchModConfig`:
 
 ```csharp
