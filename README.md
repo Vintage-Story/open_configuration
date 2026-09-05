@@ -86,6 +86,27 @@ handler for that packet's key and applies its JSON. This is also the mechanism b
   for mods that keep their config as loose static fields on a class instead of an instance; it syncs the
   class's static primitive/string/`Dictionary<string, double>` fields as a single JSON object keyed by field name.
 
+## Hot reload
+
+Configs saved via the in-game editor take effect immediately — no server restart needed.
+
+**`LoadSynced`** gets hot reload automatically. When a player with `controlserver` privilege saves a config
+through the Mods settings tab, the server re-reads the file, updates the in-memory config object in place,
+and re-syncs all currently connected clients. No code changes required in the consuming mod.
+
+**`LoadModConfig` / `Load`** (non-synced configs) can opt into hot reload with `WatchModConfig`:
+
+```csharp
+public static void Load(ICoreAPI api)
+{
+    Base = ConfigManager.LoadModConfig<BaseConfig>(api, "RPGDifficulty", "base", Logger);
+    ConfigManager.WatchModConfig<BaseConfig>(api, "RPGDifficulty", "base",
+        newConfig => Base = newConfig, Logger);
+}
+```
+
+The callback receives a freshly loaded instance every time the file is saved via the editor.
+
 ## Logging (`ModLogger`)
 
 ```csharp

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
@@ -16,7 +17,7 @@ internal static class ConfigSync
 {
     internal const string ChannelId = "openconfiguration";
 
-    private record ServerProvider(Func<string> Serialize, Func<IServerPlayer, bool>? CanSend);
+    private record ServerProvider(System.Func<string> Serialize, System.Func<IServerPlayer, bool>? CanSend);
 
     private static readonly ConcurrentDictionary<string, ServerProvider> ServerProviders = new();
     private static readonly ConcurrentDictionary<string, Action<string>> ClientHandlers = new();
@@ -42,8 +43,20 @@ internal static class ConfigSync
         });
     }
 
-    internal static void RegisterServerProvider(string key, Func<string> serialize, Func<IServerPlayer, bool>? canSend = null)
+    internal static void RegisterServerProvider(string key, System.Func<string> serialize, System.Func<IServerPlayer, bool>? canSend = null)
         => ServerProviders[key] = new ServerProvider(serialize, canSend);
 
     internal static void RegisterClientHandler(string key, Action<string> apply) => ClientHandlers[key] = apply;
+
+    internal static void BroadcastKey(ICoreServerAPI api, string key)
+    {
+        if (!ServerProviders.TryGetValue(key, out ServerProvider? provider)) return;
+        string json = provider.Serialize();
+        IServerNetworkChannel channel = api.Network.GetChannel(ChannelId);
+        foreach (IServerPlayer player in api.World.AllOnlinePlayers.OfType<IServerPlayer>())
+        {
+            if (provider.CanSend != null && !provider.CanSend(player)) continue;
+            channel.SendPacket(new ConfigSyncPacket { Key = key, Json = json }, player);
+        }
+    }
 }

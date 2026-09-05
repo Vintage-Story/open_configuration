@@ -85,6 +85,8 @@ internal static class ModConfigEditorSync
             return;
         }
 
+        ConfigManager.TriggerReload(targetPath);
+
         // Push refreshed index back to the player who saved
         api.Network.GetChannel(ConfigSync.ChannelId).SendPacket(
             new ConfigSyncPacket { Key = IndexKey, Json = BuildServerIndexJson(api) }, player);

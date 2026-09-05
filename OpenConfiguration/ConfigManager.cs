@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,6 +26,17 @@ namespace OpenConfiguration;
 /// </remarks>
 public static class ConfigManager
 {
+    private static readonly ConcurrentDictionary<string, ConcurrentBag<Action>> ReloadCallbacks = new();
+
+    internal static void RegisterReloadCallback(string configPath, Action callback)
+        => ReloadCallbacks.GetOrAdd(Path.GetFullPath(configPath), _ => new()).Add(callback);
+
+    internal static void TriggerReload(string configPath)
+    {
+        if (ReloadCallbacks.TryGetValue(Path.GetFullPath(configPath), out ConcurrentBag<Action>? callbacks))
+            foreach (Action cb in callbacks) cb();
+    }
+
     /// <summary>
     /// Loads &lt;configName&gt;.json from &lt;api.DataBasePath&gt;/&lt;relativeDirectory&gt;, creating the
     /// directory/file with default values from <typeparamref name="T"/> if either is missing. Keys present
@@ -274,6 +286,8 @@ public static class ConfigManager
     /// Server-side counterpart of <see cref="LoadSynced{T}(ICoreClientAPI, string, string, Action{T}?, ModLogger?)"/>.
     /// Loads the config exactly like <see cref="Load{T}"/>, then registers it to be pushed to every client as
     /// they join, so client code can rely on the server's values instead of its own local file.
+    /// When the file is saved via the OpenConfiguration editor the config object is updated in place and
+    /// re-synced to all currently connected clients automatically — no server restart needed.
     /// </summary>
     public static T LoadSynced<T>(
         ICoreServerAPI api,
@@ -284,7 +298,25 @@ public static class ConfigManager
     ) where T : class, new()
     {
         T config = Load<T>(api, relativeDirectory, configName, logger, defaultAsset);
-        RegisterSync(api, SyncKey(relativeDirectory, configName), () => JsonConvert.SerializeObject(config));
+        string syncKey = SyncKey(relativeDirectory, configName);
+        RegisterSync(api, syncKey, () => JsonConvert.SerializeObject(config));
+
+        string configPath = Path.GetFullPath(Path.Combine(api.DataBasePath, relativeDirectory, $"{configName}.json"));
+        ModLogger capturedLogger = logger ?? ModLogger.None;
+        RegisterReloadCallback(configPath, () =>
+        {
+            try
+            {
+                string json = File.ReadAllText(configPath);
+                Populate(json, config, configName, capturedLogger);
+                ConfigSync.BroadcastKey(api, syncKey);
+            }
+            catch (Exception ex)
+            {
+                capturedLogger.LogError($"Hot-reload '{configName}': {ex.Message}");
+            }
+        });
+
         return config;
     }
 
@@ -333,6 +365,39 @@ public static class ConfigManager
         ModLogger? logger = null
     ) where T : class, new()
         => LoadSynced<T>(api, $"ModConfig/{modFolderName}", configName, onSynced, logger);
+
+    /// <summary>
+    /// Registers <paramref name="onReloaded"/> to be called with a freshly loaded config whenever the file is
+    /// saved via the OpenConfiguration editor. Use this alongside <see cref="Load{T}"/> when you want hot
+    /// reload but do not need the config synced to clients.
+    /// </summary>
+    /// <param name="onReloaded">Callback receiving the new config instance after each reload.</param>
+    public static void WatchConfig<T>(
+        ICoreAPI api,
+        string relativeDirectory,
+        string configName,
+        Action<T> onReloaded,
+        ModLogger? logger = null
+    ) where T : class, new()
+    {
+        string configPath = Path.GetFullPath(Path.Combine(api.DataBasePath, relativeDirectory, $"{configName}.json"));
+        ModLogger capturedLogger = logger ?? ModLogger.None;
+        RegisterReloadCallback(configPath, () =>
+        {
+            try { onReloaded(Load<T>(api, relativeDirectory, configName, capturedLogger)); }
+            catch (Exception ex) { capturedLogger.LogError($"Hot-reload callback '{configName}': {ex.Message}"); }
+        });
+    }
+
+    /// <summary>Convenience overload for the "ModConfig/&lt;modFolderName&gt;/&lt;configName&gt;.json" layout.</summary>
+    public static void WatchModConfig<T>(
+        ICoreAPI api,
+        string modFolderName,
+        string configName,
+        Action<T> onReloaded,
+        ModLogger? logger = null
+    ) where T : class, new()
+        => WatchConfig<T>(api, $"ModConfig/{modFolderName}", configName, onReloaded, logger);
 
     private static string SyncKey(string relativeDirectory, string configName) => $"{relativeDirectory}/{configName}";
 
