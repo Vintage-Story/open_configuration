@@ -27,10 +27,18 @@ public class OpenConfigurationModSystem : ModSystem
         ConfigSync.InitClient(api);
         ModConfigEditorSync.RegisterClient(api);
 
-        if (!Harmony.HasAnyPatches(HarmonyId))
-        {
+        OpenConfigurationConfig config = ConfigManager.Load<OpenConfigurationConfig>(api, "ModConfig", "OpenConfiguration");
+
+        if (config.EnableGui && !Harmony.HasAnyPatches(HarmonyId))
             new Harmony(HarmonyId).PatchAll();
-        }
+
+        ConfigManager.WatchConfig<OpenConfigurationConfig>(api, "ModConfig", "OpenConfiguration", updated =>
+        {
+            if (updated.EnableGui && !Harmony.HasAnyPatches(HarmonyId))
+                new Harmony(HarmonyId).PatchAll();
+            else if (!updated.EnableGui)
+                new Harmony(HarmonyId).UnpatchAll(HarmonyId);
+        });
     }
 
     public override void Dispose()
