@@ -7,8 +7,8 @@
         "BoboDev"
     ],
     "description": "Shared API for loading/saving mod configuration files (JSON) and logging, used as a dependency by other mods.",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "dependencies": {
-        "game": "1.21.0"
+        "game": ""
     }
 }
