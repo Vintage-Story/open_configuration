@@ -47,21 +47,37 @@ internal static class ModConfigEditorSync
             return;
         }
 
-        // Reject names that look like path traversal.
-        // FileName may contain "/" for nested paths (e.g. "levelstats/axe") — validate each component.
-        string[] fileNameParts = packet.FileName.Split('/');
-        if (string.IsNullOrWhiteSpace(packet.Folder)
-            || packet.Folder.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-            || fileNameParts.Length == 0
-            || fileNameParts.Any(p => string.IsNullOrWhiteSpace(p) || p.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+        string modConfigPath = Path.GetFullPath(Path.Combine(api.DataBasePath, "ModConfig"));
+        string targetPath;
+
+        if (packet.FileName.Length == 0)
         {
-            api.Logger.Warning("[OpenConfiguration] {0} sent invalid folder/file name", player.PlayerName);
-            return;
+            // Flat root-level file: ModConfig/<Folder>.json
+            if (string.IsNullOrWhiteSpace(packet.Folder)
+                || packet.Folder.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                api.Logger.Warning("[OpenConfiguration] {0} sent invalid folder name", player.PlayerName);
+                return;
+            }
+            targetPath = Path.GetFullPath(Path.Combine(modConfigPath, packet.Folder + ".json"));
+        }
+        else
+        {
+            // Subfolder-based file: ModConfig/<Folder>/<FileName>.json
+            // FileName may contain "/" for nested paths (e.g. "levelstats/axe") — validate each component.
+            string[] fileNameParts = packet.FileName.Split('/');
+            if (string.IsNullOrWhiteSpace(packet.Folder)
+                || packet.Folder.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+                || fileNameParts.Length == 0
+                || fileNameParts.Any(p => string.IsNullOrWhiteSpace(p) || p.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+            {
+                api.Logger.Warning("[OpenConfiguration] {0} sent invalid folder/file name", player.PlayerName);
+                return;
+            }
+            string relativeFile = string.Join(Path.DirectorySeparatorChar, fileNameParts) + ".json";
+            targetPath = Path.GetFullPath(Path.Combine(modConfigPath, packet.Folder, relativeFile));
         }
 
-        string modConfigPath = Path.GetFullPath(Path.Combine(api.DataBasePath, "ModConfig"));
-        string relativeFile = string.Join(Path.DirectorySeparatorChar, fileNameParts) + ".json";
-        string targetPath = Path.GetFullPath(Path.Combine(modConfigPath, packet.Folder, relativeFile));
         if (!targetPath.StartsWith(modConfigPath + Path.DirectorySeparatorChar))
         {
             api.Logger.Warning("[OpenConfiguration] {0} attempted path traversal", player.PlayerName);
@@ -96,6 +112,13 @@ internal static class ModConfigEditorSync
     {
         ModConfigIndex index = new();
         if (!Directory.Exists(modConfigPath)) return index;
+
+        // Flat root-level files: ModConfig/<Name>.json — use empty string as file key.
+        foreach (string file in Directory.GetFiles(modConfigPath, "*.json").OrderBy(f => f))
+        {
+            string folderName = Path.GetFileNameWithoutExtension(file);
+            index.Mods[folderName] = new Dictionary<string, string> { [""] = File.ReadAllText(file) };
+        }
 
         foreach (string dir in Directory.GetDirectories(modConfigPath).OrderBy(d => d))
         {

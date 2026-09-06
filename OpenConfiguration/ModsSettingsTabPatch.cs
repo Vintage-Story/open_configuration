@@ -33,6 +33,21 @@ internal static class ModsSettingsTabPatch
     private static bool IsAdmin(ICoreClientAPI capi) =>
         capi.IsSinglePlayer || (capi.World.Player?.HasPrivilege(Privilege.controlserver) ?? false);
 
+    // Returns true when a mod folder contains exactly one flat root-level file (key == "").
+    private static bool IsFlatRootFile(ModConfigIndex clientIndex, ModEntry entry)
+    {
+        Dictionary<string, string>? serverMod = null;
+        if (entry.Source is ConfigSource.Server or ConfigSource.Both)
+            ModConfigEditorSync.ServerIndex?.Mods.TryGetValue(entry.Folder, out serverMod);
+        Dictionary<string, string>? clientMod = null;
+        if (entry.Source is ConfigSource.Client or ConfigSource.Both)
+            clientIndex.Mods.TryGetValue(entry.Folder, out clientMod);
+        HashSet<string> allKeys = (serverMod?.Keys ?? Enumerable.Empty<string>())
+            .Union(clientMod?.Keys ?? Enumerable.Empty<string>())
+            .ToHashSet();
+        return allKeys.Count == 1 && allKeys.Contains("");
+    }
+
     [HarmonyPatch("updateButtonBounds")]
     [HarmonyPostfix]
     private static void UpdateButtonBoundsPostfix(GuiCompositeSettings __instance)
@@ -131,6 +146,7 @@ internal static class ModsSettingsTabPatch
             foreach (ModEntry entry in entries)
             {
                 ModEntry captured = entry;
+                bool flatFile = IsFlatRootFile(clientIndex, entry);
                 string label = entry.Source switch
                 {
                     ConfigSource.Server => $"{entry.Folder} [Server]",
@@ -139,7 +155,13 @@ internal static class ModsSettingsTabPatch
                 };
                 composer = composer.AddButton(
                     label,
-                    () => { OnFolderContentsShown(instance, captured, "", capi); return true; },
+                    () => {
+                        if (flatFile)
+                            OnFileSelected(instance, captured, new FileEntry("", captured.Source), "", capi);
+                        else
+                            OnFolderContentsShown(instance, captured, "", capi);
+                        return true;
+                    },
                     ElementBounds.Fixed(0.0, y, 280.0, 30.0)
                 );
                 y += 40.0;
@@ -236,6 +258,7 @@ internal static class ModsSettingsTabPatch
                 FileEntry entry = entries[i];
                 FileEntry captured = entry;
                 string displayName = entry.Name[prefix.Length..];
+                if (displayName.Length == 0) displayName = mod.Folder;
                 if (entry.IsFolder) displayName += "/";
                 string label = entry.Source switch
                 {
@@ -325,12 +348,17 @@ internal static class ModsSettingsTabPatch
 
         GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
 
-        string editorHeader = subpath.Length > 0
-            ? $"{mod.Folder} / {subpath} / {file.Name[(subpath.Length + 1)..]}"
-            : $"{mod.Folder} / {file.Name}";
+        string editorHeader = file.Name.Length == 0
+            ? mod.Folder
+            : subpath.Length > 0
+                ? $"{mod.Folder} / {subpath} / {file.Name[(subpath.Length + 1)..]}"
+                : $"{mod.Folder} / {file.Name}";
         composer = composer
-            .AddButton("Back", () => { OnFolderContentsShown(instance, mod, subpath, capi); return true; },
-                ElementBounds.Fixed(0, 90, 70, 25))
+            .AddButton("Back", () => {
+                if (file.Name.Length == 0) OnModsTabToggled(instance, true);
+                else OnFolderContentsShown(instance, mod, subpath, capi);
+                return true;
+            }, ElementBounds.Fixed(0, 90, 70, 25))
             .AddStaticText(editorHeader, CairoFont.WhiteDetailText(),
                 ElementBounds.Fixed(80, 93, 320, 25));
 
@@ -468,9 +496,11 @@ internal static class ModsSettingsTabPatch
         string newKey = "";
         string newValue = "";
 
-        string editorHeader = subpath.Length > 0
-            ? $"{mod.Folder} / {subpath} / {file.Name[(subpath.Length + 1)..]}"
-            : $"{mod.Folder} / {file.Name}";
+        string editorHeader = file.Name.Length == 0
+            ? mod.Folder
+            : subpath.Length > 0
+                ? $"{mod.Folder} / {subpath} / {file.Name[(subpath.Length + 1)..]}"
+                : $"{mod.Folder} / {file.Name}";
 
         GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
         composer = composer
@@ -591,8 +621,11 @@ internal static class ModsSettingsTabPatch
     }
 
     // Builds an absolute path for a config file whose key may contain "/" for nested paths.
+    // An empty fileKey means the config lives directly at ModConfig/<modFolder>.json.
     private static string LocalPath(string dataBasePath, string modFolder, string fileKey)
     {
+        if (fileKey.Length == 0)
+            return Path.Combine(dataBasePath, "ModConfig", modFolder + ".json");
         string relativePart = fileKey.Replace('/', Path.DirectorySeparatorChar) + ".json";
         return Path.Combine(dataBasePath, "ModConfig", modFolder, relativePart);
     }
