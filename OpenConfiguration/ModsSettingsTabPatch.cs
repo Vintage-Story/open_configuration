@@ -8,6 +8,7 @@ using HarmonyLib;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Vintagestory.API.Client;
+using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using Vintagestory.Client.NoObf;
 
@@ -17,6 +18,7 @@ namespace OpenConfiguration;
 internal static class ModsSettingsTabPatch
 {
     private const string TabKey = "mods";
+    private const string CopyIconKey = "oc_copy";
 
     // Bridges the two patched methods: updateButtonBounds() computes this tab's slot
     // (and makes room for it) before ComposerHeader() builds the composer that consumes it.
@@ -107,6 +109,12 @@ internal static class ModsSettingsTabPatch
         Traverse traverse = Traverse.Create(instance);
         IGameSettingsHandler handler = traverse.Field("handler").GetValue<IGameSettingsHandler>();
         ICoreClientAPI capi = handler.Api;
+
+        // The "copy" CustomIcon registered by MainMenuGuiAPI uses a mainMenuGuiAPI reference that is
+        // invalid in-game. Re-register with SvgIconSource which uses capi.Gui.DrawSvg directly.
+        if (!capi.Gui.Icons.CustomIcons.ContainsKey(CopyIconKey))
+            capi.Gui.Icons.CustomIcons[CopyIconKey] =
+                capi.Gui.Icons.SvgIconSource(new AssetLocation("game:textures/icons/copy.svg"));
 
         bool isAdmin = IsAdmin(capi);
 
@@ -245,10 +253,14 @@ internal static class ModsSettingsTabPatch
         scrollTop = Math.Clamp(scrollTop, 0, Math.Max(0, entries.Count - visibleItems));
         int endIdx = Math.Min(scrollTop + visibleItems, entries.Count);
 
+        double afterRowsY = 130 + visibleItems * itemStep;
+        double newBtnY;
+
         if (entries.Count == 0)
         {
             composer = composer.AddStaticText("No configuration files found.", CairoFont.WhiteDetailText(),
                 ElementBounds.Fixed(0, 130, 400, 30));
+            newBtnY = 170;
         }
         else
         {
@@ -273,7 +285,13 @@ internal static class ModsSettingsTabPatch
                         else OnFileSelected(instance, mod, captured, subpath, capi);
                         return true;
                     },
-                    ElementBounds.Fixed(0, y, 300, 30));
+                    ElementBounds.Fixed(0, y, 265, 30));
+
+                if (!entry.IsFolder)
+                    composer = composer.AddIconButton(CopyIconKey,
+                        _ => ShowCopyFileDialog(instance, mod, captured, subpath, capi),
+                        ElementBounds.Fixed(270, y, 30, 30), $"copy{i}");
+
                 y += itemStep;
             }
 
@@ -281,7 +299,8 @@ internal static class ModsSettingsTabPatch
             bool hasNext = endIdx < entries.Count;
             if (hasPrev || hasNext)
             {
-                double navY = 130 + visibleItems * itemStep + 5;
+                double navY = afterRowsY + 5;
+                newBtnY = navY + 30;
                 int capturedScrollTop = scrollTop;
 
                 if (hasPrev)
@@ -298,7 +317,15 @@ internal static class ModsSettingsTabPatch
                         () => { OnFolderContentsShown(instance, mod, subpath, capi, capturedScrollTop + visibleItems); return true; },
                         ElementBounds.Fixed(290, navY, 70, 25));
             }
+            else
+            {
+                newBtnY = afterRowsY + 10;
+            }
         }
+
+        composer = composer.AddButton("New",
+            () => { ShowNewFileDialog(instance, mod, subpath, capi); return true; },
+            ElementBounds.Fixed(0, newBtnY, 80, 25));
 
         composer = composer.Compose();
         traverse.Field("composer").SetValue(composer);
@@ -591,7 +618,7 @@ internal static class ModsSettingsTabPatch
         return File.Exists(localPath) ? File.ReadAllText(localPath) : "";
     }
 
-    private static void SaveContent(GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, string content, ICoreClientAPI capi)
+    private static void WriteFileContent(ModEntry mod, FileEntry file, string content, ICoreClientAPI capi)
     {
         if (file.Source is ConfigSource.Server or ConfigSource.Both)
         {
@@ -616,8 +643,99 @@ internal static class ModsSettingsTabPatch
                 capi.Logger.Error("[OpenConfiguration] Failed to write local config: {0}", ex.Message);
             }
         }
+    }
 
+    private static void SaveContent(GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, string content, ICoreClientAPI capi)
+    {
+        WriteFileContent(mod, file, content, capi);
         OnFolderContentsShown(instance, mod, subpath, capi);
+    }
+
+    private static void ShowNewFileDialog(GuiCompositeSettings instance, ModEntry mod, string subpath, ICoreClientAPI capi)
+    {
+        Traverse traverse = Traverse.Create(instance);
+        IGameSettingsHandler handler = traverse.Field("handler").GetValue<IGameSettingsHandler>();
+
+        string newFileName = "";
+        string headerText = subpath.Length > 0
+            ? mod.Folder + " / " + subpath.Replace("/", " / ")
+            : mod.Folder;
+
+        GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
+        composer = composer
+            .AddButton("Back",
+                () => { OnFolderContentsShown(instance, mod, subpath, capi); return true; },
+                ElementBounds.Fixed(0, 90, 70, 25))
+            .AddStaticText(headerText, CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(80, 93, 310, 25))
+            .AddStaticText("File name:", CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(5, 145, 100, 28))
+            .AddTextInput(
+                ElementBounds.Fixed(110, 143, 250, 30),
+                text => newFileName = text,
+                CairoFont.WhiteDetailText(), "newFileName")
+            .AddButton("Create",
+                () => {
+                    string name = newFileName.Trim();
+                    if (string.IsNullOrEmpty(name)) return true;
+                    string prefix = subpath.Length > 0 ? subpath + "/" : "";
+                    string fileKey = prefix + name;
+                    // New files go to server if mod is server-only, otherwise client
+                    ConfigSource newSrc = mod.Source == ConfigSource.Server ? ConfigSource.Server : ConfigSource.Client;
+                    FileEntry newFile = new FileEntry(fileKey, newSrc);
+                    WriteFileContent(mod, newFile, "{}", capi);
+                    OnFileSelected(instance, mod, newFile, subpath, capi);
+                    return true;
+                },
+                ElementBounds.Fixed(0, 190, 80, 30));
+
+        composer = composer.Compose();
+        traverse.Field("composer").SetValue(composer);
+        handler.LoadComposer(composer);
+    }
+
+    private static void ShowCopyFileDialog(GuiCompositeSettings instance, ModEntry mod, FileEntry file, string subpath, ICoreClientAPI capi)
+    {
+        Traverse traverse = Traverse.Create(instance);
+        IGameSettingsHandler handler = traverse.Field("handler").GetValue<IGameSettingsHandler>();
+
+        string prefix = subpath.Length > 0 ? subpath + "/" : "";
+        string baseName = file.Name[prefix.Length..];
+        string newFileName = baseName + "_copy";
+        string headerText = subpath.Length > 0
+            ? mod.Folder + " / " + subpath.Replace("/", " / ")
+            : mod.Folder;
+
+        GuiComposer composer = traverse.Method("ComposerHeader", "gamesettings-mods", TabKey).GetValue<GuiComposer>();
+        composer = composer
+            .AddButton("Back",
+                () => { OnFolderContentsShown(instance, mod, subpath, capi); return true; },
+                ElementBounds.Fixed(0, 90, 70, 25))
+            .AddStaticText(headerText, CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(80, 93, 310, 25))
+            .AddStaticText("New name:", CairoFont.WhiteDetailText(),
+                ElementBounds.Fixed(5, 145, 100, 28))
+            .AddTextInput(
+                ElementBounds.Fixed(110, 143, 250, 30),
+                text => newFileName = text,
+                CairoFont.WhiteDetailText(), "copyFileName")
+            .AddButton("Copy",
+                () => {
+                    string name = newFileName.Trim();
+                    if (string.IsNullOrEmpty(name)) return true;
+                    string newKey = prefix + name;
+                    string content = GetFileContent(mod, file, capi);
+                    FileEntry newFile = new FileEntry(newKey, file.Source);
+                    WriteFileContent(mod, newFile, content, capi);
+                    OnFolderContentsShown(instance, mod, subpath, capi);
+                    return true;
+                },
+                ElementBounds.Fixed(0, 190, 80, 30));
+
+        composer = composer.Compose();
+        composer.GetTextInput("copyFileName")?.SetValue(baseName + "_copy");
+        traverse.Field("composer").SetValue(composer);
+        handler.LoadComposer(composer);
     }
 
     // Builds an absolute path for a config file whose key may contain "/" for nested paths.
