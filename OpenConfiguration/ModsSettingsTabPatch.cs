@@ -288,8 +288,8 @@ internal static class ModsSettingsTabPatch
                     ElementBounds.Fixed(0, y, 265, 30));
 
                 if (!entry.IsFolder)
-                    composer = composer.AddIconButton(CopyIconKey,
-                        _ => ShowCopyFileDialog(instance, mod, captured, subpath, capi),
+                    composer = composer.AddIconClickButton(CopyIconKey,
+                        () => { ShowCopyFileDialog(instance, mod, captured, subpath, capi); return true; },
                         ElementBounds.Fixed(270, y, 30, 30), $"copy{i}");
 
                 y += itemStep;
@@ -300,7 +300,7 @@ internal static class ModsSettingsTabPatch
             if (hasPrev || hasNext)
             {
                 double navY = afterRowsY + 5;
-                newBtnY = navY + 30;
+                newBtnY = navY + 38;
                 int capturedScrollTop = scrollTop;
 
                 if (hasPrev)
@@ -447,7 +447,7 @@ internal static class ModsSettingsTabPatch
         if (hasPrev || hasNext)
         {
             double navY = afterRowsY + 5;
-            btnY = navY + 30;
+            btnY = navY + 38;
             int capturedScrollTop = scrollTop;
 
             if (hasPrev)
