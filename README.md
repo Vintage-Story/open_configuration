@@ -11,3 +11,6 @@ Shared API for Vintage Story mods to handle configuration files (`ModConfig/.../
 ## Not Supported
 - Mods that does not use ``.json`` configuration files
 - Mods that does not use open configuration for generating files does not automatically refresh upon saving (restart is required)
+
+## API Usage
+[WIKI](https://github.com/LeansBoboDev/open_configuration/wiki)
