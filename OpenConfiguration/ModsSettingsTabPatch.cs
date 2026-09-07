@@ -102,7 +102,7 @@ internal static class ModsSettingsTabPatch
 
     private record FieldRow(string Key, JToken OriginalValue, bool IsReadOnly);
 
-    private static void OnModsTabToggled(GuiCompositeSettings instance, bool on)
+    private static void OnModsTabToggled(GuiCompositeSettings instance, bool on, int scrollTop = 0)
     {
         if (!on) return;
 
@@ -144,15 +144,22 @@ internal static class ModsSettingsTabPatch
 
         composer = composer.AddStaticText("Mods", CairoFont.WhiteSmallishText(), ElementBounds.Fixed(0.0, 90.0, 400.0, 30.0));
 
+        const int visibleItems = 7;
+        const double itemStep = 40.0;
+
         if (entries.Count == 0)
         {
             composer = composer.AddStaticText("No mod configurations found.", CairoFont.WhiteDetailText(), ElementBounds.Fixed(0.0, 130.0, 400.0, 30.0));
         }
         else
         {
+            scrollTop = Math.Clamp(scrollTop, 0, Math.Max(0, entries.Count - visibleItems));
+            int endIdx = Math.Min(scrollTop + visibleItems, entries.Count);
+
             double y = 130.0;
-            foreach (ModEntry entry in entries)
+            for (int i = scrollTop; i < endIdx; i++)
             {
+                ModEntry entry = entries[i];
                 ModEntry captured = entry;
                 bool flatFile = IsFlatRootFile(clientIndex, entry);
                 string label = entry.Source switch
@@ -172,7 +179,29 @@ internal static class ModsSettingsTabPatch
                     },
                     ElementBounds.Fixed(0.0, y, 280.0, 30.0)
                 );
-                y += 40.0;
+                y += itemStep;
+            }
+
+            bool hasPrev = scrollTop > 0;
+            bool hasNext = endIdx < entries.Count;
+            if (hasPrev || hasNext)
+            {
+                double navY = 130.0 + visibleItems * itemStep + 5.0;
+                int capturedScrollTop = scrollTop;
+
+                if (hasPrev)
+                    composer = composer.AddButton("Prev",
+                        () => { OnModsTabToggled(instance, true, capturedScrollTop - visibleItems); return true; },
+                        ElementBounds.Fixed(0, navY, 70, 25));
+
+                string pageInfo = $"{scrollTop + 1}-{endIdx} / {entries.Count}";
+                composer = composer.AddStaticText(pageInfo, CairoFont.WhiteDetailText(),
+                    ElementBounds.Fixed(80, navY + 3, 190, 22));
+
+                if (hasNext)
+                    composer = composer.AddButton("Next",
+                        () => { OnModsTabToggled(instance, true, capturedScrollTop + visibleItems); return true; },
+                        ElementBounds.Fixed(290, navY, 70, 25));
             }
         }
 
@@ -396,19 +425,19 @@ internal static class ModsSettingsTabPatch
             double rowY = startY + (i - scrollTop) * rowStep;
 
             composer = composer.AddStaticText(field.Key, CairoFont.WhiteDetailText(),
-                ElementBounds.Fixed(5, rowY, labelW, rowH));
+                ElementBounds.Fixed(5, rowY + 5, labelW, rowH - 10));
 
             string capturedKey = field.Key;
             ElementBounds inputB = ElementBounds.Fixed(inputX, rowY, inputW, rowH);
 
             if (field.IsReadOnly)
             {
-                composer = composer.AddStaticText("[complex]", CairoFont.WhiteDetailText(), inputB);
+                composer = composer.AddStaticText("[complex]", CairoFont.WhiteDetailText(),
+                    ElementBounds.Fixed(inputX, rowY + 5, inputW, rowH - 10));
             }
             else if (field.OriginalValue.Type == JTokenType.Boolean)
             {
-                // Fixed small bounds — switch renders at a fixed internal size, rowH padding centers it
-                ElementBounds switchB = ElementBounds.Fixed(inputX, rowY + 5, 50, rowH - 10);
+                ElementBounds switchB = ElementBounds.Fixed(inputX, rowY, 50, rowH);
                 composer = composer.AddSwitch(
                     on => values[capturedKey] = new JValue(on),
                     switchB, fieldKey);
