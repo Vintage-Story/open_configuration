@@ -20,6 +20,7 @@ public class OpenConfigurationModSystem : ModSystem
     {
         ConfigSync.InitServer(api);
         ModConfigEditorSync.RegisterServer(api);
+        ConfigManager.LoadSyncedModConfig<OpenConfigurationServerConfig>(api, "OpenConfiguration", "server");
     }
 
     public override void StartClientSide(ICoreClientAPI api)
@@ -27,17 +28,30 @@ public class OpenConfigurationModSystem : ModSystem
         ConfigSync.InitClient(api);
         ModConfigEditorSync.RegisterClient(api);
 
-        OpenConfigurationConfig config = ConfigManager.Load<OpenConfigurationConfig>(api, "ModConfig", "OpenConfiguration");
+        OpenConfigurationConfig localConfig = ConfigManager.Load<OpenConfigurationConfig>(api, "ModConfig", "OpenConfiguration");
+        OpenConfigurationServerConfig serverConfig = new();
+        serverConfig = ConfigManager.LoadSyncedModConfig<OpenConfigurationServerConfig>(
+            api, "OpenConfiguration", "server", _ => Apply());
 
-        if (config.EnableGui && !Harmony.HasAnyPatches(HarmonyId))
-            new Harmony(HarmonyId).PatchAll();
+        void Apply()
+        {
+            if (serverConfig.EnableGui && localConfig.EnableGui)
+            {
+                if (!Harmony.HasAnyPatches(HarmonyId))
+                    new Harmony(HarmonyId).PatchAll();
+            }
+            else
+            {
+                new Harmony(HarmonyId).UnpatchAll(HarmonyId);
+            }
+        }
+
+        Apply();
 
         ConfigManager.WatchConfig<OpenConfigurationConfig>(api, "ModConfig", "OpenConfiguration", updated =>
         {
-            if (updated.EnableGui && !Harmony.HasAnyPatches(HarmonyId))
-                new Harmony(HarmonyId).PatchAll();
-            else if (!updated.EnableGui)
-                new Harmony(HarmonyId).UnpatchAll(HarmonyId);
+            localConfig.EnableGui = updated.EnableGui;
+            Apply();
         });
     }
 
